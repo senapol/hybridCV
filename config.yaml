@@ -1,0 +1,11 @@
+path: absolute path to dataset (/path/to/dataset)
+train: relative path from dataset (/train)
+test: relative path from dataset (/test)
+val: relative path from dataset (/val)
+
+# Define Classes and their Labels
+
+names:
+  0: Ball
+  1: Player
+  2: Referee
