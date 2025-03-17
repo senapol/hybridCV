@@ -1,0 +1,9 @@
+models/
+runs/
+trackers/
+training/
+images/
+*.MOV
+*.mov
+*.pt
+*.pth
