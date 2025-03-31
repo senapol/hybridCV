@@ -6,13 +6,18 @@ from typing import Optional
 from collections import deque
 import numpy as np
 import argparse as ap
+import pandas as pd
 
 @dataclass
 class BallDetection:
     centre: tuple
     timestamp: float
+    frame: int
     confidence: float
-    detection_method: str # YOLO, HSV, LK, Houghd
+    detection_method: str # YOLO, HSV, LK, Hough
+    camera: int
+
+# Actual frame of image or pointer to frame capture.get(CV_CAP_PROP_POS_FRAMES);
 
 class CameraProcessor:
     def __init__(self, camera_id: int, video_path: str, model_path: str = 'models/last2.pt'):
@@ -48,7 +53,7 @@ class CameraProcessor:
         print(f'Initialising LK at {centre}')
 
 
-    def process_frame(self, frame, timestamp) -> Optional[BallDetection]:
+    def process_frame(self, frame, timestamp, cam_id) -> Optional[BallDetection]:
 
         self.frame_count += 1
         # current = time.time() - self.start_time
@@ -57,7 +62,7 @@ class CameraProcessor:
 
         results = self.model(frame)[0]
 
-        if len(results.boxes) > 0 and results.boxes[0].conf[0].item() > 0.42:
+        if len(results.boxes) > 0 and results.boxes[0].conf[0].item() > 0.35:
             # get highest confidence detection
             max_conf = max(results.boxes, key=lambda box: float(box.conf[0].item()))
             x1, y1, x2, y2 = max_conf.xyxy[0].cpu().numpy()
@@ -69,7 +74,7 @@ class CameraProcessor:
 
             self.init_lk(frame, centre)
             self.successful_frames += 1
-            return BallDetection(centre, timestamp, conf, 'YOLO')
+            return BallDetection(centre, timestamp, conf, 'YOLO', cam_id)
         
         elif self.prev_grey is not None and self.lk_age < self.lk_max and self.lk_pts is not None:
             # use hsv segmentation + hough circle
@@ -108,7 +113,7 @@ class CameraProcessor:
                     estimated_conf = 0.1
                 
                 self.successful_frames += 1
-                return BallDetection(centre, timestamp, estimated_conf, 'LK')
+                return BallDetection(centre, timestamp, estimated_conf, 'LK', cam_id)
             else:
                 self.lk_pts = None
                 print('Optical flow: ball lost')
@@ -129,7 +134,8 @@ class CameraProcessor:
             timestamp = self.cap.get(cv.CAP_PROP_POS_MSEC)
             print(f'Processing frame {self.frame_count} @ {timestamp}ms')
 
-            detection = self.process_frame(frame, timestamp)
+            detection = self.process_frame(frame, timestamp, self.camera_id)
+
             
             for i in range(1, len(self.pts)):
                     if self.pts[i - 1] is None or self.pts[i] is None:
@@ -163,6 +169,9 @@ class CameraProcessor:
                 detections_array.append(detection)
                 # cv.putText(frame, f'Method|Confidence: {detection.detection_method}|{detection.confidence:.2f}', (detection.centre[0], detection.centre[1] - 10), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
+            cv.namedWindow('Hybrid tracking', cv.WINDOW_NORMAL) 
+  
+            cv.resizeWindow('Hybrid tracking', 2000, 700)
             # cv.putText(frame, f'FRame: {self.frame_count} @ {timestamp:.2f}s', (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
             cv.imshow('Hybrid tracking', frame)
             if cv.waitKey(1) & 0xFF == ord('q'):
@@ -177,7 +186,7 @@ class CameraProcessor:
 
 def main():
     parser = ap.ArgumentParser()
-    parser.add_argument('--video', type=str, help='Path to video file', default='images/tennisvid.mp4')
+    parser.add_argument('--video', type=str, help='Path to video file', default='images/tennisvid7.mp4')
     args = parser.parse_args()
 
     processor0 = CameraProcessor(0, args.video)
@@ -186,6 +195,19 @@ def main():
     # processor3 = CameraProcessor(3, 'images/tennisvid.mp4')
 
     detections0 = processor0.run()
+    print('Saving to csv..')
+    detections_df = pd.DataFrame([
+        {
+            'x': d.centre[0],
+            'y': d.centre[1],
+            'timestamp': d.timestamp,
+            'confidence': d.confidence,
+            'detection_method': d.detection_method,
+            'camera': d.camera
+        } for d in detections0
+    ])
+    detections_df.to_csv(f'output/detections.csv', index=False)
+
     # detections1 = processor1.run()
     # detections2 = processor2.run()
     # detections3 = processor3.run()
