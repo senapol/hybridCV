@@ -212,9 +212,9 @@ def main():
             'confidence': d.confidence,
             'detection_method': d.detection_method,
             'camera': d.camera
-        } for d in detections1
+        } for d in detections
     ])
-    detections_df.to_csv(f'output/detections2.csv', index=False)
+    detections_df.to_csv(f'output/detections_x.csv', index=False)
 
     # detections1 = processor1.run()
     # detections2 = processor2.run()
