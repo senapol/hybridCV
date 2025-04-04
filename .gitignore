@@ -7,3 +7,7 @@ training/
 *.mov
 *.pt
 *.pth
+
+venv-yolo/
+videos/
+output/

@@ -142,24 +142,18 @@ class CameraProcessor:
             timestamp = self.cap.get(cv.CAP_PROP_POS_MSEC)
             frame_no = self.cap.get(cv.CAP_PROP_POS_FRAMES)
             print(f'Processing frame {self.frame_count} @ {timestamp}ms')
-
             detection = self.process_frame(frame, timestamp, frame_no, self.camera_id)
-
-            
             for i in range(1, len(self.pts)):
                     if self.pts[i - 1] is None or self.pts[i] is None:
                         continue
-                    
                     pt1, method1 = self.pts[i - 1]
                     pt2, method2 = self.pts[i]
-
                     # if len(pt1) != 2 or len(pt2) != 2:
                     #     print(f'Point length error: {len(pt1)}, {len(pt2)}')
                     #     continue
 
                     # Calculate line thickness based on position in trail
                     thickness = int(np.sqrt(64 / float(i + 1)) * 2.5)
-                    
                     # Set line colour based on detection method
                     if method1 == 'YOLO':
                         line_colour = (0, 0, 255) # red
@@ -179,7 +173,6 @@ class CameraProcessor:
                 # cv.putText(frame, f'Method|Confidence: {detection.detection_method}|{detection.confidence:.2f}', (detection.centre[0], detection.centre[1] - 10), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
             cv.namedWindow('Hybrid tracking', cv.WINDOW_NORMAL) 
-  
             cv.resizeWindow('Hybrid tracking', 2000, 700)
             # cv.putText(frame, f'FRame: {self.frame_count} @ {timestamp:.2f}s', (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
             cv.imshow('Hybrid tracking', frame)
