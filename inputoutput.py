@@ -13,6 +13,7 @@ class BallDetection:
     centre: tuple
     timestamp: float
     frame_no: int
+    frame_count: int
     confidence: float
     detection_method: str # YOLO, HSV, LK, Hough
     camera: int
@@ -74,7 +75,10 @@ class CameraProcessor:
 
             self.init_lk(frame, centre)
             self.successful_frames += 1
-            return BallDetection(centre, timestamp, frame_no, conf, 'YOLO', cam_id)
+
+            # save frame
+            cv.imwrite(f'stereoA-frames/{cam_id}_{self.frame_count}.jpg', frame)
+            return BallDetection(centre, timestamp, frame_no, self.frame_count, conf, 'YOLO', cam_id)
         
         elif self.prev_grey is not None and self.lk_age < self.lk_max and self.lk_pts is not None:
             # use hsv segmentation + hough circle
@@ -113,7 +117,11 @@ class CameraProcessor:
                     estimated_conf = 0.1
                 
                 self.successful_frames += 1
-                return BallDetection(centre, timestamp, frame_no, estimated_conf, 'LK', cam_id)
+
+                # save frame
+                cv.imwrite(f'stereoA-frames/{cam_id}_{self.frame_count}.jpg', frame)
+
+                return BallDetection(centre, timestamp, frame_no, self.frame_count, estimated_conf, 'LK', cam_id)
             else:
                 self.lk_pts = None
                 print('Optical flow: ball lost')
@@ -209,12 +217,14 @@ def main():
             'y': d.centre[1],
             'timestamp': d.timestamp,
             'frame_no': d.frame_no,
+            'frame_count': d.frame_count,
             'confidence': d.confidence,
             'detection_method': d.detection_method,
             'camera': d.camera
         } for d in detections
     ])
-    detections_df.to_csv(f'output/detections_x.csv', index=False)
+    detections_df.sort_values(by='timestamp', inplace=True)
+    detections_df.to_csv(f'output/detections_{args.video1}_{args.video2}.csv', index=False)
 
     # detections1 = processor1.run()
     # detections2 = processor2.run()
