@@ -12,7 +12,7 @@ import pandas as pd
 class BallDetection:
     centre: tuple
     timestamp: float
-    frame: int
+    frame_no: int
     confidence: float
     detection_method: str # YOLO, HSV, LK, Hough
     camera: int
@@ -53,7 +53,7 @@ class CameraProcessor:
         print(f'Initialising LK at {centre}')
 
 
-    def process_frame(self, frame, timestamp, cam_id) -> Optional[BallDetection]:
+    def process_frame(self, frame, timestamp, frame_no, cam_id) -> Optional[BallDetection]:
 
         self.frame_count += 1
         # current = time.time() - self.start_time
@@ -74,7 +74,7 @@ class CameraProcessor:
 
             self.init_lk(frame, centre)
             self.successful_frames += 1
-            return BallDetection(centre, timestamp, conf, 'YOLO', cam_id)
+            return BallDetection(centre, timestamp, frame_no, conf, 'YOLO', cam_id)
         
         elif self.prev_grey is not None and self.lk_age < self.lk_max and self.lk_pts is not None:
             # use hsv segmentation + hough circle
@@ -113,7 +113,7 @@ class CameraProcessor:
                     estimated_conf = 0.1
                 
                 self.successful_frames += 1
-                return BallDetection(centre, timestamp, estimated_conf, 'LK', cam_id)
+                return BallDetection(centre, timestamp, frame_no, estimated_conf, 'LK', cam_id)
             else:
                 self.lk_pts = None
                 print('Optical flow: ball lost')
@@ -132,9 +132,10 @@ class CameraProcessor:
                 break
             
             timestamp = self.cap.get(cv.CAP_PROP_POS_MSEC)
+            frame_no = self.cap.get(cv.CAP_PROP_POS_FRAMES)
             print(f'Processing frame {self.frame_count} @ {timestamp}ms')
 
-            detection = self.process_frame(frame, timestamp, self.camera_id)
+            detection = self.process_frame(frame, timestamp, frame_no, self.camera_id)
 
             
             for i in range(1, len(self.pts)):
@@ -186,27 +187,34 @@ class CameraProcessor:
 
 def main():
     parser = ap.ArgumentParser()
-    parser.add_argument('--video', type=str, help='Path to video file', default='images/tennisvid7.mp4')
+    parser.add_argument('--video1', type=str, help='Path to video file', default='images/tennisvid7.mp4')
+    parser.add_argument('--video2', type=str, help='Path to video file', default='images/tennisvid7.mp4')
+
     args = parser.parse_args()
 
-    processor0 = CameraProcessor(0, args.video)
-    # processor1 = CameraProcessor(1, 'images/tennisvid.mp4')
-    # processor2 = CameraProcessor(2, 'images/tennisvid.mp4')
+    processor1 = CameraProcessor(1, args.video1)
+    processor2 = CameraProcessor(2, args.video2)
     # processor3 = CameraProcessor(3, 'images/tennisvid.mp4')
 
-    detections0 = processor0.run()
+    detections = []
+    detections1 = processor1.run()
+    detections2 = processor2.run()
+
+    detections.append(detections1)
+    detections.append(detections2)
     print('Saving to csv..')
     detections_df = pd.DataFrame([
         {
             'x': d.centre[0],
             'y': d.centre[1],
             'timestamp': d.timestamp,
+            'frame_no': d.frame_no,
             'confidence': d.confidence,
             'detection_method': d.detection_method,
             'camera': d.camera
-        } for d in detections0
+        } for d in detections1
     ])
-    detections_df.to_csv(f'output/detections.csv', index=False)
+    detections_df.to_csv(f'output/detections2.csv', index=False)
 
     # detections1 = processor1.run()
     # detections2 = processor2.run()
