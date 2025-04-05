@@ -8,6 +8,20 @@ import numpy as np
 import argparse as ap
 import pandas as pd
 
+
+parser = ap.ArgumentParser()
+parser.add_argument('--video1', type=str, help='Path to video file', default='images/tennisvid7.mp4')
+parser.add_argument('--video2', type=str, help='Path to video file', default='images/tennisvid7.mp4')
+
+args = parser.parse_args()
+
+videos = {
+    1: args.video1,
+    2: args.video2
+    # 'B1': args.video3,
+    # 'B2': args.video4
+}
+
 @dataclass
 class BallDetection:
     centre: tuple
@@ -54,11 +68,13 @@ class CameraProcessor:
         print(f'Initialising LK at {centre}')
 
 
-    def process_frame(self, frame, timestamp, frame_no, cam_id) -> Optional[BallDetection]:
+    def process_frame(self, frame, timestamp: float, frame_no: int, cam_id: int) -> Optional[BallDetection]:
 
         self.frame_count += 1
         # current = time.time() - self.start_time
-
+        # if self.frame_count < 27784 or self.frame_count > 27883:
+        #     print(f'Frame {self.frame_count} skipped')
+        #     return None
         grey = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
 
         results = self.model(frame)[0]
@@ -77,7 +93,7 @@ class CameraProcessor:
             self.successful_frames += 1
 
             # save frame
-            cv.imwrite(f'stereoA-frames/{cam_id}_{self.frame_count}.jpg', frame)
+            cv.imwrite(f'stereoA-frames/{videos[cam_id]}_{self.frame_count}.jpg', frame)
             return BallDetection(centre, timestamp, frame_no, self.frame_count, conf, 'YOLO', cam_id)
         
         elif self.prev_grey is not None and self.lk_age < self.lk_max and self.lk_pts is not None:
@@ -119,7 +135,7 @@ class CameraProcessor:
                 self.successful_frames += 1
 
                 # save frame
-                cv.imwrite(f'stereoA-frames/{cam_id}_{self.frame_count}.jpg', frame)
+                cv.imwrite(f'stereoA-frames/{videos[cam_id]}_{self.frame_count}.jpg', frame)
 
                 return BallDetection(centre, timestamp, frame_no, self.frame_count, estimated_conf, 'LK', cam_id)
             else:
@@ -134,13 +150,24 @@ class CameraProcessor:
         
     def run(self):
         detections_array = []
+        # frame_range = (27784, 27883)
+        frame_range = (600, 1800) # 20 secs
+        print(f'Processing video {videos[self.camera_id]} from frame {frame_range[0]} to {frame_range[1]}')
+
+        self.cap.set(cv.CAP_PROP_POS_FRAMES, frame_range[0] - 1)
+        self.frame_count = frame_range[0] - 1
+
         while True:
             ret, frame = self.cap.read()
             if not ret:
                 break
             
             timestamp = self.cap.get(cv.CAP_PROP_POS_MSEC)
-            frame_no = self.cap.get(cv.CAP_PROP_POS_FRAMES)
+            frame_no = int(self.cap.get(cv.CAP_PROP_POS_FRAMES))
+
+            if frame_no > frame_range[1]:
+                print(f'End of video reached at frame {frame_no}')
+                break
             print(f'Processing frame {self.frame_count} @ {timestamp}ms')
 
             detection = self.process_frame(frame, timestamp, frame_no, self.camera_id)
@@ -194,22 +221,23 @@ class CameraProcessor:
 
 
 def main():
-    parser = ap.ArgumentParser()
-    parser.add_argument('--video1', type=str, help='Path to video file', default='images/tennisvid7.mp4')
-    parser.add_argument('--video2', type=str, help='Path to video file', default='images/tennisvid7.mp4')
 
-    args = parser.parse_args()
-
-    processor1 = CameraProcessor(1, args.video1)
-    processor2 = CameraProcessor(2, args.video2)
-    # processor3 = CameraProcessor(3, 'images/tennisvid.mp4')
+    processor1 = CameraProcessor(1, args.video1) # A1
+    processor2 = CameraProcessor(2, args.video2) # A2
+    # processor3 = CameraProcessor(3, 'images/tennisvid.mp4') # B1
+    # processor4 = CameraProcessor(4, 'images/tennisvid.mp4') # B2
 
     detections = []
     detections1 = processor1.run()
     detections2 = processor2.run()
+    # detections3 = processor3.run()
+    # detections4 = processor4.run()
 
-    detections.append(detections1)
-    detections.append(detections2)
+    detections.extend(detections1)
+    detections.extend(detections2)
+    # detections.append(detections3)
+    # detections.append(detections4)
+    
     print('Saving to csv..')
     detections_df = pd.DataFrame([
         {
@@ -223,15 +251,9 @@ def main():
             'camera': d.camera
         } for d in detections
     ])
+    detections_df.set_index('timestamp', inplace=True)
     detections_df.sort_values(by='timestamp', inplace=True)
-    detections_df.to_csv(f'output/detections_{args.video1}_{args.video2}.csv', index=False)
-
-    # detections1 = processor1.run()
-    # detections2 = processor2.run()
-    # detections3 = processor3.run()
-
-    # final_array = (detections0, detections1, detections2, detections3)
-    # final_array.sort(key=lambda x: x.timestamp)
+    detections_df.to_csv(f'output/detections_A1_A2-2s.csv', index=True)
 
 
 if __name__ == '__main__':
