@@ -10,8 +10,10 @@ import pandas as pd
 import os
 import csv
 from datetime import datetime
+from getstereo import create_stereo_detections as ss_csv
 
 frame_range = (930, 1800)
+output_csv = f'output/detections_A1_A2-2s.csv'
 
 parser = ap.ArgumentParser()
 parser.add_argument('--video1', type=str, help='Path to video file', default='images/A1-s.mov')
@@ -19,6 +21,7 @@ parser.add_argument('--video2', type=str, help='Path to video file', default='im
 parser.add_argument('--video3', type=str, help='Path to video file', default='images/tennisvid7.mp4')
 parser.add_argument('--video4', type=str, help='Path to video file', default='images/tennisvid7.mp4')
 parser.add_argument('--model', type=str, help='Path to model file', default='models/last2.pt')
+parser.add_argument('--save_stereo', '-SS', type=bool, help='Save to stereo detections.csv?', default=False)
 # parser.add_argument('--start', type=int, help='Start frame', default=0)
 # parser.add_argument('--end', type=int, help='End frame', default=0)
 args = parser.parse_args()
@@ -40,9 +43,10 @@ class BallDetection:
     detection_method: str # BG, YOLO, HSV, LK, Hough
     camera: int
 
-# Actual frame of image or pointer to frame capture.get(CV_CAP_PROP_POS_FRAMES);
-
 class CameraProcessor:
+    '''Processor for each camera (A1,A2,B1,B2)
+    run() processes video frame by frame according to frame_range
+    creates list of all detections'''
     def __init__(self, camera_id: int, video_path: str, model_path: str = 'models/last2.pt'):
         self.camera_id = camera_id
         self.cap = cv.VideoCapture(video_path)
@@ -173,7 +177,6 @@ class CameraProcessor:
             except Exception as e:
                 print(f'Error saving frame: {e}')
             return BallDetection(ball_pt, timestamp, frame_no, self.frame_count, conf, 'BG', cam_id)
-        
         results = self.model(frame)[0]
 
         if len(results.boxes) > 0 and results.boxes[0].conf[0].item() > 0.35:
@@ -401,8 +404,12 @@ def main():
     ])
     detections_df.set_index('timestamp', inplace=True)
     detections_df.sort_values(by='timestamp', inplace=True)
-    detections_df.to_csv(f'output/detections_A1_A2-2s.csv', index=True)
-
+    detections_df.to_csv(output_csv, index=True)
 
 if __name__ == '__main__':
     main()
+    stereo_csv_path = 'output/stereo_detections.csv'
+    
+    if args.save_stereo == True:
+        ss_csv(output_csv, stereo_csv_path)
+        print(f'CSV saved to {stereo_csv_path}')
