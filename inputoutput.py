@@ -12,14 +12,16 @@ import csv
 from datetime import datetime
 from getstereo import create_stereo_detections as ss_csv
 
-frame_range = (930, 1800)
-output_csv = f'output/detections_A1_A2-2s.csv'
+frame_range = (1020, 1680)
+id = int(time.time()-1744060000)
+output_A_csv = f'output/stereo_A_detections_{id}.csv'
+output_B_csv = f'output/stereo_B_detections_{id}.csv'
 
 parser = ap.ArgumentParser()
 parser.add_argument('--video1', type=str, help='Path to video file', default='images/A1-s.mov')
 parser.add_argument('--video2', type=str, help='Path to video file', default='images/A2-s2.mov')
-parser.add_argument('--video3', type=str, help='Path to video file', default='images/tennisvid7.mp4')
-parser.add_argument('--video4', type=str, help='Path to video file', default='images/tennisvid7.mp4')
+parser.add_argument('--video3', type=str, help='Path to video file', default='images/B1-s.mov')
+parser.add_argument('--video4', type=str, help='Path to video file', default='images/B2-s.mov')
 parser.add_argument('--model', type=str, help='Path to model file', default='models/last2.pt')
 parser.add_argument('--save_stereo', '-SS', type=bool, help='Save to stereo detections.csv?', default=False)
 # parser.add_argument('--start', type=int, help='Start frame', default=0)
@@ -28,9 +30,9 @@ args = parser.parse_args()
 
 videos = {
     1: args.video1,
-    2: args.video2
-    # 'B1': args.video3,
-    # 'B2': args.video4
+    2: args.video2,
+    3: args.video3,
+    4: args.video4
 }
 
 @dataclass
@@ -132,14 +134,14 @@ class CameraProcessor:
                 area = cv.contourArea(contour)
                 if area < 5:
                     continue
-
                 perimeter = cv.arcLength(contour, True)
                 if perimeter > 0:
                     circularity = 4 * np.pi * (area / (perimeter ** 2))
                     if circularity > best_circularity:
                         best_circularity = circularity
                         best_contour = contour
-            if best_contour is not None and best_circularity > 0.5:
+            if best_contour is not None and best_circularity > 0.6:
+                print(f'CIRCULARITY: ')
                 M = cv.moments(best_contour)
                 if M['m00'] != 0:
                     cx = int(M['m10'] / M['m00'])
@@ -149,66 +151,87 @@ class CameraProcessor:
                     confidence = best_circularity
                     return ball_pt, confidence
         return None, 0
+    
+    def successful(self, pt, method, frame, conf):
+        self.pts.appendleft((pt, method))
+        self.successful_frames += 1
+        if method != 'LK':        
+            self.init_lk(frame, pt)
+            
+        if self.consec_no_detection > 0:
+            self.detection_gaps.append(self.consec_no_detection)
+            self.consec_no_detection = 0
+        os.makedirs(f'output/matching_frames/frame_{self.frame_count}', exist_ok=True)
+        frame_c = frame.copy()
 
-    def process_frame(self, frame, timestamp: float, frame_no: int, cam_id: int) -> Optional[BallDetection]:
+        cv.circle(frame_c, pt, 15, (0, 0, 255), 5)
+        cv.putText(frame, f'{method}: {conf:.2f}', (20,40), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        cv.putText(frame_c, f'{method}: {conf:.2f}', (20,40), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        # save frame
+        try:
+            cv.imwrite(f'output/matching_frames/frame_{self.frame_count}/{self.camera_id}_{self.frame_count}.jpg', frame_c)
+        except Exception as e:
+            print(f'Error saving frame: {e}')
+
+    def process_frame(self, frame, timestamp: float, frame_no: int) -> Optional[BallDetection]:
 
         self.frame_count += 1
         grey = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
 
-        ball_pt, conf = self.detect_bgsub(frame, grey)
+        bg_pt, bg_conf = self.detect_bgsub(frame, grey)
 
-        if ball_pt is not None:
-            print(f'Background sub: ball detected at {ball_pt}, confidence {conf}')
-            self.pts.appendleft((ball_pt, 'BG'))
-            self.init_lk(frame, ball_pt)
-            self.successful_frames += 1
-
-            if self.consec_no_detection > 0:
-                self.detection_gaps.append(self.consec_no_detection)
-                self.consec_no_detection = 0
-            os.makedirs(f'stereoA-frames/frame_{self.frame_count}', exist_ok=True)
-            frame_c = frame.copy()
-            cv.circle(frame_c, ball_pt, 15, (255, 0, 0), 5) # blue
-            cv.putText(frame, f'BG: {conf:.2f}', (20,40), cv.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-            cv.putText(frame_c, f'BG: {conf:.2f}', (20,40), cv.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-
-            try:
-                cv.imwrite(f'stereoA-frames/frame_{self.frame_count}/{cam_id}_{self.frame_count}.jpg', frame_c)
-            except Exception as e:
-                print(f'Error saving frame: {e}')
-            return BallDetection(ball_pt, timestamp, frame_no, self.frame_count, conf, 'BG', cam_id)
         results = self.model(frame)[0]
+        yolo_pt = None
+        yolo_conf = 0.0
 
-        if len(results.boxes) > 0 and results.boxes[0].conf[0].item() > 0.35:
+        if len(results.boxes) > 0 and results.boxes[0].conf[0].item() > 0.38:
             # get highest confidence detection
             max_conf = max(results.boxes, key=lambda box: float(box.conf[0].item()))
             x1, y1, x2, y2 = max_conf.xyxy[0].cpu().numpy()
-            centre = (int((x1 + x2) // 2), int((y1 + y2) // 2))
-            conf = max_conf.conf[0].item()
+            yolo_pt = (int((x1 + x2) // 2), int((y1 + y2) // 2))
+            yolo_conf = max_conf.conf[0].item()
 
-            print(f'YOLO: ball detected at {centre} with confidence {conf}')
-            self.pts.appendleft((centre, 'YOLO'))
+        final_pt = None
+        final_conf = 0.0
+        method = None
 
-            self.init_lk(frame, centre)
-            self.successful_frames += 1
+        if bg_pt is not None and yolo_pt is not None:
 
-            if self.consec_no_detection > 0:
-                self.detection_gaps.append(self.consec_no_detection)
-                self.consec_no_detection = 0
+            dist = np.sqrt((bg_pt[0] - yolo_pt[0])**2 + (bg_pt[1] - yolo_pt[1])**2)
+            if dist < 50:
+                w_x = (bg_pt[0]*bg_conf + yolo_pt[0]*yolo_conf) / (bg_conf + yolo_conf)
+                w_y = (bg_pt[1]*bg_conf + yolo_pt[1]*yolo_conf) / (bg_conf + yolo_conf)
+                final_pt = (int(w_x), int(w_y))
+                final_conf = min(1.0, ((bg_conf + yolo_conf)/2))
+                method = 'BG/YOLO'
+                print(f'HYBRID: Corroborated detection at {final_pt}, confidence {final_conf:.2f}')
+            else:
+                # distance too large
+                if bg_conf > yolo_conf:
+                    final_pt = bg_pt
+                    final_conf = bg_conf
+                    method = 'BG'
+                    print(f'BG: ball detected at {bg_pt}, confidence {final_conf:.2f}')
+                else:
+                    final_pt = yolo_pt
+                    final_conf = yolo_conf
+                    method = 'YOLO'
+                    print(f'YOLO: ball detected at {final_pt}, confidence {final_conf:.2f}')
+        elif bg_pt is not None:
+            final_pt = bg_pt
+            final_conf = bg_conf
+            method = 'BG'
+            print(f'BG: ball detected at {final_pt}, confidence {final_conf:.2f}')
 
-            os.makedirs(f'stereoA-frames/frame_{self.frame_count}', exist_ok=True)
-            frame_c = frame.copy()
+        elif yolo_pt is not None:
+            final_pt = yolo_pt
+            final_conf = yolo_conf
+            method = 'YOLO'
+            print(f'YOLO: ball detected at {final_pt}, confidence {final_conf:.2f}')
 
-            cv.circle(frame_c, centre, 15, (0, 0, 255), 5)
-            cv.putText(frame, f'YOLO: {conf:.2f}', (20,40), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
-            cv.putText(frame_c, f'YOLO: {conf:.2f}', (20,40), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            # save frame
-            try:
-                cv.imwrite(f'stereoA-frames/frame_{self.frame_count}/{cam_id}_{self.frame_count}.jpg', frame_c)
-            except Exception as e:
-                print(f'Error saving frame: {e}')
-            return BallDetection(centre, timestamp, frame_no, self.frame_count, conf, 'YOLO', cam_id)
+        if final_pt is not None:
+            self.successful(final_pt, method, frame, final_conf)
+            return BallDetection(final_pt, timestamp, frame_no, self.frame_count, final_conf, method, self.camera_id)
         
         elif self.prev_grey is not None and self.lk_age < self.lk_max and self.lk_pts is not None:
             # use hsv segmentation + hough circle
@@ -232,35 +255,16 @@ class CameraProcessor:
                     self.consec_no_detection += 1
                     self.max_consec_no_detection = max(self.max_consec_no_detection, self.consec_no_detection)
                     return None
-                self.pts.appendleft((centre, 'LK'))
-
+                
                 self.prev_grey = grey
                 self.lk_pts = new_points
 
                 estimated_conf = max(0.2, 0.5-(self.lk_age/10))
                 if self.lk_age > self.lk_max:
                     estimated_conf = 0.1
-                
-                self.successful_frames += 1
-
-                if self.consec_no_detection > 0:
-                    self.detection_gaps.append(self.consec_no_detection)
-                    self.consec_no_detection = 0
-                # save frame
-                os.makedirs(f'stereoA-frames/frame_{self.frame_count}', exist_ok=True)
-
-                frame_c = frame.copy()
-                cv.circle(frame_c, centre, 20, (0, 255, 0), 5)
-
-                cv.putText(frame, f'LK: {estimated_conf:.2f}', (20,40), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
-                cv.putText(frame_c, f'LK: {estimated_conf:.2f}', (20,40), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
-                try:
-                    cv.imwrite(f'stereoA-frames/frame_{self.frame_count}/{cam_id}_{self.frame_count}.jpg', frame_c)
-                except Exception as e:
-                    print(f'Error saving frame: {e}')
-                return BallDetection(centre, timestamp, frame_no, self.frame_count, estimated_conf, 'LK', cam_id)
+            
+                self.successful(centre, 'LK', frame, estimated_conf)
+                return BallDetection(centre, timestamp, frame_no, self.frame_count, estimated_conf, 'LK', self.camera_id)
             else:
                 self.lk_pts = None
                 print('Optical flow: ball lost')
@@ -293,7 +297,7 @@ class CameraProcessor:
                 print(f'End of video reached at frame {frame_no}')
                 break
             print(f'Processing frame {self.frame_count} @ {timestamp}ms')
-            detection = self.process_frame(frame, timestamp, frame_no, self.camera_id)
+            detection = self.process_frame(frame, timestamp, frame_no)
             for i in range(1, len(self.pts)):
                     if self.pts[i - 1] is None or self.pts[i] is None:
                         continue
@@ -375,22 +379,33 @@ def main():
 
     processor1 = CameraProcessor(1, args.video1, model_path=args.model) # A1
     processor2 = CameraProcessor(2, args.video2,model_path=args.model) # A2
-    # processor3 = CameraProcessor(3, 'images/tennisvid.mp4') # B1
-    # processor4 = CameraProcessor(4, 'images/tennisvid.mp4') # B2
+    processor3 = CameraProcessor(3, args.video3, model_path=args.model) # B1
+    processor4 = CameraProcessor(4, args.video4, model_path=args.model) # B2
 
-    detections = []
+    print('Processing camera A1')
     detections1 = processor1.run()
+    print('Processing camera A2')
     detections2 = processor2.run()
-    # detections3 = processor3.run()
-    # detections4 = processor4.run()
+    print('Processing camera B1')
+    detections3 = processor3.run()
+    print('Processing camera B2')
+    detections4 = processor4.run()
 
-    detections.extend(detections1)
-    detections.extend(detections2)
-    # detections.append(detections3)
-    # detections.append(detections4)
+    detectionsA = []
+    detectionsB = []
+    detectionsA.extend(detections1)
+    detectionsA.extend(detections2)
+    detectionsB.extend(detections3)
+    detectionsB.extend(detections4)
+
+    all_detections = []
+    all_detections.extend(detectionsA)
+    all_detections.extend(detectionsB)
+
+    os.makedirs('output', exist_ok=True)
     
-    print('Saving to csv..')
-    detections_df = pd.DataFrame([
+    print('Saving stereo A detections to CSV..')
+    df_A = pd.DataFrame([
         {
             'x': d.centre[0],
             'y': d.centre[1],
@@ -400,16 +415,32 @@ def main():
             'confidence': d.confidence,
             'detection_method': d.detection_method,
             'camera': d.camera
-        } for d in detections
+        } for d in detectionsA
     ])
-    detections_df.set_index('timestamp', inplace=True)
-    detections_df.sort_values(by='timestamp', inplace=True)
-    detections_df.to_csv(output_csv, index=True)
+    df_A.set_index('timestamp', inplace=True)
+    df_A.sort_values(by='timestamp', inplace=True)
+    df_stereoA = ss_csv(df_A, stereo='A')
+    df_stereoA.to_csv(output_A_csv, index=True)
+    print(f'Saved pair A detections to {output_A_csv}')
+
+    df_B = pd.DataFrame([
+        {
+            'x': d.centre[0],
+            'y': d.centre[1],
+            'timestamp': d.timestamp,
+            'frame_no': d.frame_no,
+            'frame_count': d.frame_count,
+            'confidence': d.confidence,
+            'detection_method': d.detection_method,
+            'camera': d.camera
+        } for d in detectionsB
+    ])
+    df_B.set_index('timestamp', inplace=True)
+    df_B.sort_values(by='timestamp', inplace=True)
+    df_stereoB = ss_csv(df_B, stereo='B')
+    df_stereoB.to_csv(output_B_csv, index=True)
+    print(f'Saved pair B detections to {output_B_csv}')
 
 if __name__ == '__main__':
     main()
-    stereo_csv_path = 'output/stereo_detections.csv'
-    
-    if args.save_stereo == True:
-        ss_csv(output_csv, stereo_csv_path)
-        print(f'CSV saved to {stereo_csv_path}')
+    # save the matching stereo detections in new csv
