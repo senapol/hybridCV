@@ -9,24 +9,25 @@ import argparse as ap
 import pandas as pd
 import os
 import csv
-from datetime import datetime
 from getstereo import create_stereo_detections as ss_csv
-
-frame_range = (1020, 1680)
-id = int(time.time()-1744060000)
-output_A_csv = f'output/stereo_A_detections_{id}.csv'
-output_B_csv = f'output/stereo_B_detections_{id}.csv'
+from concurrent.futures import ThreadPoolExecutor
 
 parser = ap.ArgumentParser()
 parser.add_argument('--video1', type=str, help='Path to video file', default='images/A1-s.mov')
 parser.add_argument('--video2', type=str, help='Path to video file', default='images/A2-s2.mov')
-parser.add_argument('--video3', type=str, help='Path to video file', default='images/B1-s.mov')
-parser.add_argument('--video4', type=str, help='Path to video file', default='images/B2-s.mov')
-parser.add_argument('--model', type=str, help='Path to model file', default='models/last2.pt')
-parser.add_argument('--save_stereo', '-SS', type=bool, help='Save to stereo detections.csv?', default=False)
-# parser.add_argument('--start', type=int, help='Start frame', default=0)
-# parser.add_argument('--end', type=int, help='End frame', default=0)
+parser.add_argument('--video3', type=str, help='Path to video file', default='images/B1-g.mov')
+parser.add_argument('--video4', type=str, help='Path to video file', default='images/B2-g.mov')
+parser.add_argument('--model', type=str, help='Path to model file', default='models/last3.pt')
+parser.add_argument('--start', type=int, help='Starting frame number', default=1020)
+parser.add_argument('--end', type=int, help='Ending frame number', default=1680)
+parser.add_argument('--save_output', type=bool, help='Save output to CSV', default=True)
+parser.add_argument('--save_video', type=bool, help='Save output as video', default=True)
 args = parser.parse_args()
+
+frame_range = (args.start, args.end)
+id = int(time.time()-1744060000)
+output_A_csv = f'output/stereo_A_detections_{id}.csv'
+output_B_csv = f'output/stereo_B_detections_{id}.csv'
 
 videos = {
     1: args.video1,
@@ -49,8 +50,9 @@ class CameraProcessor:
     '''Processor for each camera (A1,A2,B1,B2)
     run() processes video frame by frame according to frame_range
     creates list of all detections'''
-    def __init__(self, camera_id: int, video_path: str, model_path: str = 'models/last2.pt'):
+    def __init__(self, camera_id: int, video_path: str, model_path: str = 'models/last2.pt', output_dir='output/matching_frames', save_video=False):
         self.camera_id = camera_id
+        self.csv_output = output_dir
         self.cap = cv.VideoCapture(video_path)
         self.model = YOLO(model_path)
         self.frame_count = 0
@@ -60,6 +62,7 @@ class CameraProcessor:
         self.consec_no_detection = 0
         self.max_consec_no_detection = 0
         self.detection_gaps = []
+        self.save_video = save_video
 
         # background sub
         self.backSub = cv.createBackgroundSubtractorKNN(history=500, dist2Threshold=400, detectShadows=False)
@@ -79,6 +82,16 @@ class CameraProcessor:
         self.fps = self.cap.get(cv.CAP_PROP_FPS)
         self.width = int(self.cap.get(cv.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv.CAP_PROP_FRAME_HEIGHT))
+
+        # Video writer setup
+        if self.save_video:
+            os.makedirs('output/videos', exist_ok=True)
+            self.video_filename = f'output/videos/camera_{camera_id}_tracking_{id}.mp4'
+            fourcc = cv.VideoWriter_fourcc(*'mp4v')
+            self.video_writer = cv.VideoWriter(self.video_filename, fourcc, self.fps, (self.width, self.height))
+            print(f'Video will be saved to {self.video_filename}')
+        else:
+            self.video_writer = None
 
         print(f'Camera {camera_id} initialized with WxH {self.width}x{self.height} @ {self.fps}fps')
 
@@ -161,15 +174,19 @@ class CameraProcessor:
         if self.consec_no_detection > 0:
             self.detection_gaps.append(self.consec_no_detection)
             self.consec_no_detection = 0
-        os.makedirs(f'output/matching_frames/frame_{self.frame_count}', exist_ok=True)
-        frame_c = frame.copy()
+    
+        frame_dir = f'{self.csv_output}/frame_{self.frame_count}'
+        os.makedirs(frame_dir, exist_ok=True)
 
+        frame_c = frame.copy()
         cv.circle(frame_c, pt, 15, (0, 0, 255), 5)
-        cv.putText(frame, f'{method}: {conf:.2f}', (20,40), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        # cv.putText(frame, f'{method}: {conf:.2f}', (20,40), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         cv.putText(frame_c, f'{method}: {conf:.2f}', (20,40), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         # save frame
+        csv_dir = f'{frame_dir}/{self.camera_id}_{self.frame_count}.jpg'
         try:
-            cv.imwrite(f'output/matching_frames/frame_{self.frame_count}/{self.camera_id}_{self.frame_count}.jpg', frame_c)
+            cv.imwrite(csv_dir, frame_c)
+            print(f'Saved frame to {csv_dir}')
         except Exception as e:
             print(f'Error saving frame: {e}')
 
@@ -298,44 +315,57 @@ class CameraProcessor:
                 break
             print(f'Processing frame {self.frame_count} @ {timestamp}ms')
             detection = self.process_frame(frame, timestamp, frame_no)
+            
+            # Create a clean display frame
+            display_frame = frame.copy()
+            
+            # Draw the trails
             for i in range(1, len(self.pts)):
-                    if self.pts[i - 1] is None or self.pts[i] is None:
-                        continue
-                    pt1, method1 = self.pts[i - 1]
-                    pt2, method2 = self.pts[i]
-                    # if len(pt1) != 2 or len(pt2) != 2:
-                    #     print(f'Point length error: {len(pt1)}, {len(pt2)}')
-                    #     continue
+                if self.pts[i - 1] is None or self.pts[i] is None:
+                    continue
+                pt1, method1 = self.pts[i - 1]
+                pt2, method2 = self.pts[i]
 
-                    # Calculate line thickness based on position in trail
-                    thickness = int(np.sqrt(64 / float(i + 1)) * 2.5)
-                    # Set line colour based on detection method
-                    if method1 == 'BG':
-                        line_colour = (255, 0, 0) # blue
+                # Calculate line thickness based on position in trail
+                thickness = int(np.sqrt(64 / float(i + 1)) * 2.5)
+                # Set line colour based on detection method
+                if method1 == 'BG':
+                    line_colour = (255, 0, 0) # blue
+                elif method1 == 'YOLO':
+                    line_colour = (0, 0, 255) # red
+                elif method1 == 'LK':
+                    line_colour = (0, 255, 0) # green
+                else:
+                    line_colour = (255, 255, 0) # cyan
 
-                    elif method1 == 'YOLO':
-                        line_colour = (0, 0, 255) # red
-                    
-                    elif method2 == 'LK':
-                        line_colour = (0, 255, 0) # green
-                    
-                    else:
-                        line_colour = (255, 255, 0) # cyan
+                # Draw connecting line
+                cv.line(display_frame, pt1, pt2, line_colour, thickness)
 
-                    # Draw connecting line
-                    cv.line(frame, pt1, pt2, line_colour, thickness)
-
-                    detection_rate = (self.successful_frames / (self.frame_count - frame_range[0] + 1)) * 100
-                    cv.putText(frame, f'Detection rate: {detection_rate:.2f}%', (500, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            # Add detection rate text with larger font
+            detection_rate = (self.successful_frames / (self.frame_count - frame_range[0] + 1)) * 100
+            cv.putText(display_frame, f'Detection rate: {detection_rate:.2f}%', (20, 80), 
+                      cv.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 2)
+            
+            # Add frame info
+            cv.putText(display_frame, f'Frame: {self.frame_count}', (20, 120), 
+                      cv.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 2)
+            
+            # Mark current detection point
             if detection:
-                cv.circle(frame, detection.centre, 5, (0, 0, 255), -1)
+                cv.circle(display_frame, detection.centre, 15, (0, 0, 255), -1)
                 detections_array.append(detection)
-                # cv.putText(frame, f'Method|Confidence: {detection.detection_method}|{detection.confidence:.2f}', (detection.centre[0], detection.centre[1] - 10), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                # Add method and confidence info
+                cv.putText(display_frame, f'{detection.detection_method}: {detection.confidence:.2f}', 
+                          (20, 40), cv.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 2)
 
+            # Save frame to video if enabled
+            if self.save_video and self.video_writer is not None:
+                self.video_writer.write(display_frame)
+
+            # Display frame
             cv.namedWindow('Hybrid tracking', cv.WINDOW_NORMAL) 
             cv.resizeWindow('Hybrid tracking', 2000, 700)
-            # cv.putText(frame, f'FRame: {self.frame_count} @ {timestamp:.2f}s', (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-            cv.imshow('Hybrid tracking', frame)
+            cv.imshow('Hybrid tracking', display_frame)
             
             if cv.waitKey(1) & 0xFF == ord('q'):
                 print(f'Quitting at frame {self.frame_count}')
@@ -354,21 +384,27 @@ class CameraProcessor:
         print(f'Longest streak of no detection: {self.max_consec_no_detection} frames')
         print(f'Average detection gap length: {avg_gap:.2f} frames')  
          # Save metrics to CSV
-        with open(metrics_path, 'w', newline='') as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow(['Metric', 'Value'])
-            writer.writerow(['Total Frames', self.frame_count - frame_range[0] + 1])
-            writer.writerow(['Frames With Detection', self.successful_frames])
-            writer.writerow(['Detection Rate (%)', f"{detection_rate:.2f}"])
-            writer.writerow(['Max Consecutive Frames Without Detection', self.max_consec_no_detection])
-            writer.writerow(['Average Gap Length', f"{avg_gap:.2f}"])
-            # Add detailed gap information
-            writer.writerow([])
-            writer.writerow(['Gap Lengths (frames)'])
-            for gap in self.detection_gaps:
-                writer.writerow([gap])
-                
-        print(f"Detection metrics saved to: {metrics_path}")
+        if args.save_output:
+            with open(metrics_path, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(['Metric', 'Value'])
+                writer.writerow(['Total Frames', self.frame_count - frame_range[0] + 1])
+                writer.writerow(['Frames With Detection', self.successful_frames])
+                writer.writerow(['Detection Rate (%)', f"{detection_rate:.2f}"])
+                writer.writerow(['Max Consecutive Frames Without Detection', self.max_consec_no_detection])
+                writer.writerow(['Average Gap Length', f"{avg_gap:.2f}"])
+                # Add detailed gap information
+                writer.writerow([])
+                writer.writerow(['Gap Lengths (frames)'])
+                for gap in self.detection_gaps:
+                    writer.writerow([gap])
+                    
+            print(f"Detection metrics saved to: {metrics_path}")
+        
+        # Close video writer
+        if self.save_video and self.video_writer is not None:
+            self.video_writer.release()
+            print(f"Video saved to: {self.video_filename}")
         
         self.cap.release()
         cv.destroyAllWindows()
@@ -376,27 +412,36 @@ class CameraProcessor:
 
 
 def main():
+    base = 'output/matching_frames'
+    counter = 1
+    matching_dir = base
+    while os.path.exists(matching_dir):
+        counter += 1
+        matching_dir = f'{base}{counter}'
 
-    processor1 = CameraProcessor(1, args.video1, model_path=args.model) # A1
-    processor2 = CameraProcessor(2, args.video2,model_path=args.model) # A2
-    processor3 = CameraProcessor(3, args.video3, model_path=args.model) # B1
-    processor4 = CameraProcessor(4, args.video4, model_path=args.model) # B2
+    os.makedirs(matching_dir)
+    print(f'Created output directory {matching_dir}')
 
-    print('Processing camera A1')
-    detections1 = processor1.run()
-    print('Processing camera A2')
-    detections2 = processor2.run()
-    print('Processing camera B1')
-    detections3 = processor3.run()
-    print('Processing camera B2')
-    detections4 = processor4.run()
+    processor1 = CameraProcessor(1, args.video1, model_path=args.model, output_dir=matching_dir, save_video=args.save_video) # A1
+    processor2 = CameraProcessor(2, args.video2, model_path=args.model, output_dir=matching_dir, save_video=args.save_video) # A2
+    processor3 = CameraProcessor(3, args.video3, model_path=args.model, output_dir=matching_dir, save_video=args.save_video) # B1
+    processor4 = CameraProcessor(4, args.video4, model_path=args.model, output_dir=matching_dir, save_video=args.save_video) # B2
+
+    with ThreadPoolExecutor() as executor:
+        futures = [
+            executor.submit(processor1.run),
+            executor.submit(processor2.run),
+            executor.submit(processor3.run),
+            executor.submit(processor4.run)
+        ]
+        results = [future.result() for future in futures]
 
     detectionsA = []
     detectionsB = []
-    detectionsA.extend(detections1)
-    detectionsA.extend(detections2)
-    detectionsB.extend(detections3)
-    detectionsB.extend(detections4)
+    detectionsA.extend(results[0])
+    detectionsA.extend(results[1])
+    detectionsB.extend(results[2])
+    detectionsB.extend(results[3])
 
     all_detections = []
     all_detections.extend(detectionsA)
@@ -420,8 +465,9 @@ def main():
     df_A.set_index('timestamp', inplace=True)
     df_A.sort_values(by='timestamp', inplace=True)
     df_stereoA = ss_csv(df_A, stereo='A')
-    df_stereoA.to_csv(output_A_csv, index=True)
-    print(f'Saved pair A detections to {output_A_csv}')
+    if args.save_output:
+        df_stereoA.to_csv(output_A_csv, index=True)
+        print(f'Saved pair A detections to {output_A_csv}')
 
     df_B = pd.DataFrame([
         {
@@ -438,8 +484,9 @@ def main():
     df_B.set_index('timestamp', inplace=True)
     df_B.sort_values(by='timestamp', inplace=True)
     df_stereoB = ss_csv(df_B, stereo='B')
-    df_stereoB.to_csv(output_B_csv, index=True)
-    print(f'Saved pair B detections to {output_B_csv}')
+    if args.save_output:
+        df_stereoB.to_csv(output_B_csv, index=True)
+        print(f'Saved pair B detections to {output_B_csv}')
 
 if __name__ == '__main__':
     main()
