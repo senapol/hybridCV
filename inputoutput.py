@@ -8,7 +8,6 @@ import numpy as np
 import argparse as ap
 import pandas as pd
 import os
-import csv
 from getstereo import create_stereo_detections as ss_csv
 from concurrent.futures import ThreadPoolExecutor
 
@@ -52,6 +51,7 @@ class CameraProcessor:
     creates list of all detections'''
     def __init__(self, camera_id: int, video_path: str, model_path: str = 'models/last2.pt', output_dir='output/matching_frames', save_video=False):
         self.camera_id = camera_id
+        self.window_name = f'Camera {camera_id}'
         self.csv_output = output_dir
         self.cap = cv.VideoCapture(video_path)
         self.model = YOLO(model_path)
@@ -62,14 +62,13 @@ class CameraProcessor:
         self.consec_no_detection = 0
         self.max_consec_no_detection = 0
         self.detection_gaps = []
-        self.save_video = save_video
 
-        # background sub
+        # Background subtraction
         self.backSub = cv.createBackgroundSubtractorKNN(history=500, dist2Threshold=400, detectShadows=False)
         self.prev_frame = None
         self.prev_Mt = None
 
-        # lk optical flow
+        # LK optical flow
         self.prev_grey = None
         self.lk_age = 0
         self.lk_max = 10
@@ -78,13 +77,13 @@ class CameraProcessor:
                               maxLevel=3,
                               criteria=(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 30, 0.03))
 
-        #properties
+        # Properties
         self.fps = self.cap.get(cv.CAP_PROP_FPS)
         self.width = int(self.cap.get(cv.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv.CAP_PROP_FRAME_HEIGHT))
 
         # Video writer setup
-        if self.save_video:
+        if args.save_video:
             os.makedirs('output/videos', exist_ok=True)
             self.video_filename = f'output/videos/camera_{camera_id}_tracking_{id}.mp4'
             fourcc = cv.VideoWriter_fourcc(*'mp4v')
@@ -180,8 +179,8 @@ class CameraProcessor:
 
         frame_c = frame.copy()
         cv.circle(frame_c, pt, 15, (0, 0, 255), 5)
-        # cv.putText(frame, f'{method}: {conf:.2f}', (20,40), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         cv.putText(frame_c, f'{method}: {conf:.2f}', (20,40), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        
         # save frame
         csv_dir = f'{frame_dir}/{self.camera_id}_{self.frame_count}.jpg'
         try:
@@ -306,7 +305,7 @@ class CameraProcessor:
             ret, frame = self.cap.read()
             if not ret:
                 break
-            
+
             timestamp = self.cap.get(cv.CAP_PROP_POS_MSEC)
             frame_no = int(self.cap.get(cv.CAP_PROP_POS_FRAMES))
 
@@ -315,10 +314,10 @@ class CameraProcessor:
                 break
             print(f'Processing frame {self.frame_count} @ {timestamp}ms')
             detection = self.process_frame(frame, timestamp, frame_no)
-            
+
             # Create a clean display frame
             display_frame = frame.copy()
-            
+
             # Draw the trails
             for i in range(1, len(self.pts)):
                 if self.pts[i - 1] is None or self.pts[i] is None:
@@ -330,84 +329,54 @@ class CameraProcessor:
                 thickness = int(np.sqrt(64 / float(i + 1)) * 2.5)
                 # Set line colour based on detection method
                 if method1 == 'BG':
-                    line_colour = (255, 0, 0) # blue
+                    line_colour = (255, 0, 0)  # blue
                 elif method1 == 'YOLO':
-                    line_colour = (0, 0, 255) # red
+                    line_colour = (0, 0, 255)  # red
                 elif method1 == 'LK':
-                    line_colour = (0, 255, 0) # green
+                    line_colour = (0, 255, 0)  # green
                 else:
-                    line_colour = (255, 255, 0) # cyan
+                    line_colour = (255, 255, 0)  # cyan
 
                 # Draw connecting line
                 cv.line(display_frame, pt1, pt2, line_colour, thickness)
 
             # Add detection rate text with larger font
             detection_rate = (self.successful_frames / (self.frame_count - frame_range[0] + 1)) * 100
-            cv.putText(display_frame, f'Detection rate: {detection_rate:.2f}%', (20, 80), 
-                      cv.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 2)
-            
+            cv.putText(display_frame, f'Detection rate: {detection_rate:.2f}%', (20, 80),
+                       cv.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 2)
+
             # Add frame info
-            cv.putText(display_frame, f'Frame: {self.frame_count}', (20, 120), 
-                      cv.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 2)
-            
+            cv.putText(display_frame, f'Frame: {self.frame_count}', (20, 120),
+                       cv.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 2)
+
             # Mark current detection point
             if detection:
                 cv.circle(display_frame, detection.centre, 15, (0, 0, 255), -1)
                 detections_array.append(detection)
                 # Add method and confidence info
-                cv.putText(display_frame, f'{detection.detection_method}: {detection.confidence:.2f}', 
-                          (20, 40), cv.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 2)
+                cv.putText(display_frame, f'{detection.detection_method}: {detection.confidence:.2f}',
+                           (20, 40), cv.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 2)
 
             # Save frame to video if enabled
-            if self.save_video and self.video_writer is not None:
+            if args.save_video and self.video_writer is not None:
                 self.video_writer.write(display_frame)
 
-            # Display frame
-            cv.namedWindow('Hybrid tracking', cv.WINDOW_NORMAL) 
-            cv.resizeWindow('Hybrid tracking', 2000, 700)
-            cv.imshow('Hybrid tracking', display_frame)
-            
+            # Display frame in the unique window
+            cv.namedWindow(self.window_name, cv.WINDOW_NORMAL)
+            cv.resizeWindow(self.window_name, 800, 600)  # Resize window for better visibility
+            cv.imshow(self.window_name, display_frame)
+
             if cv.waitKey(1) & 0xFF == ord('q'):
                 print(f'Quitting at frame {self.frame_count}')
                 break
 
-        metrics_path = os.path.join('output', f'detection_metrics_{self.camera_id}.csv')
-        os.makedirs('output', exist_ok=True)
-
-        detection_rate = (self.successful_frames / (self.frame_count - frame_range[0] + 1))*100
-
-        avg_gap = sum(self.detection_gaps) / len(self.detection_gaps) if self.detection_gaps else 0
-        print(f'Ball detection metrics for camera {self.camera_id}:')
-        print(f'Frames processed: {self.frame_count}')
-        print(f'Frames with detection: {self.successful_frames}')
-        print(f'Successful detection rate: {detection_rate}%')
-        print(f'Longest streak of no detection: {self.max_consec_no_detection} frames')
-        print(f'Average detection gap length: {avg_gap:.2f} frames')  
-         # Save metrics to CSV
-        if args.save_output:
-            with open(metrics_path, 'w', newline='') as csvfile:
-                writer = csv.writer(csvfile)
-                writer.writerow(['Metric', 'Value'])
-                writer.writerow(['Total Frames', self.frame_count - frame_range[0] + 1])
-                writer.writerow(['Frames With Detection', self.successful_frames])
-                writer.writerow(['Detection Rate (%)', f"{detection_rate:.2f}"])
-                writer.writerow(['Max Consecutive Frames Without Detection', self.max_consec_no_detection])
-                writer.writerow(['Average Gap Length', f"{avg_gap:.2f}"])
-                # Add detailed gap information
-                writer.writerow([])
-                writer.writerow(['Gap Lengths (frames)'])
-                for gap in self.detection_gaps:
-                    writer.writerow([gap])
-                    
-            print(f"Detection metrics saved to: {metrics_path}")
-        
         # Close video writer
-        if self.save_video and self.video_writer is not None:
+        if args.save_video and self.video_writer is not None:
             self.video_writer.release()
             print(f"Video saved to: {self.video_filename}")
-        
+
         self.cap.release()
-        cv.destroyAllWindows()
+        cv.destroyWindow(self.window_name)  # Destroy the unique window for this camera
         return detections_array
 
 
